@@ -3,7 +3,9 @@
 # 处理的逻辑：处理流程是stream是一个流，实时获取麦克风语音数据，而回调函数会每次当有新的语音数据，会调用回调函数，传入frame_count帧的语音数据，回调函数会处理，处理完毕后，返回frame_count的数据，以及是否继续的标志。如果继续，即返回paContinue，当stream流依然活着，就继续调用回调函数，传入的数据是现在stream中的frame_count帧的语音数据。可以理解为stream是一直流动的，而回调函数只从这流动的线中，截取当前的一段距离进行处理。
 # 为了保证主线程不死，在主线程中不断休眠。
 
-
+import speech_recognition as sr
+import librosa.display
+# from pandas import Interval
 import pyaudio
 #import os     用于调试的模块
 import tkinter as tk
@@ -16,8 +18,9 @@ import matplotlib.lines as line
 import numpy as np
 from scipy import fftpack
 from scipy import signal
+import librosa
 
-CHUNK = 1024
+CHUNK = 2048
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
@@ -30,23 +33,7 @@ FFT_LEN = 128
 frames = []
 counter = 1
 
-
-# GUI
-# 此单元为图形界面设计
-class Application(tk.Frame):
-    def __init__(self, master=None):
-        tk.Frame.__init__(self, master)
-        self.grid()
-        self.creatWidgets()
-
-    def creatWidgets(self):
-        self.quitButton = tk.Button(self, text='quit', command=root.destroy)
-        self.quitButton.grid(column=1, row=3)
-
-
-# Matplotlib
-# Matplotlib 是一个 Python 的 2D绘图库
-fig = plt.figure()  # 建立图形
+fig = plt.figure()  
 rt_ax = plt.subplot(212, xlim=(0, CHUNK), ylim=(-10000, 10000))  # 设置界面范围
 fft_ax = plt.subplot(211)
 fft_ax.set_yscale('log')
@@ -62,6 +49,8 @@ fft_data = np.arange(0, CHUNK / 2 + 1, 1)  # 0~CHUNK/2 + 1的数组
 rt_x_data = np.arange(0, CHUNK, 1)  # x轴0~1024
 fft_x_data = np.arange(0, CHUNK / 2 + 1, 1)  # x轴0~512
 
+mfcc_fig=plt.figure()
+mfccs=np.arange(0,39).reshape(13,3)
 
 # 参数设定
 def plot_init():
@@ -82,19 +71,41 @@ def plot_update(i):
     fft_line.set_ydata(fft_data)
     return fft_line, rt_line,
 
+def mfcc_init():
+    global mfcc_fig
+    mfcc_fig=plt.figure(figsize=(25,10))
+    plt.colorbar(format="%+2.f")
+    return mfcc_fig
 
-# Makes an animation by repeatedly calling a function func.
-# 个人理解此函数是不断更新画面
+def mfcc_update():
+    global mfccs
+    librosa.display.specshow(mfccs,x_axis="time",sr=RATE)
+    return mfcc_fig
+
+
 ani = animation.FuncAnimation(fig, plot_update,
                               init_func=plot_init,
                               frames=1,
                               interval=30,
                               blit=True)
 
-# pyaudio
+# ani = animation.FuncAnimation(mfcc_fig,mfcc_update,
+#                               init_func=mfcc_init,
+#                               frames=1,
+#                               interval=30,
+#                               blit=True)
+
+def mfcc_show():
+    global rt_data
+    global mfcc_fig
+    mfccs=librosa.feature.mfcc(rt_data,n_mfcc=13,sr=RATE)
+    mfcc_fig=plt.figure(figsize=(25,10))
+    librosa.display.specshow(mfccs,x_axis="time",sr=RATE)
+    plt.colorbar(format="%+2.f")
+    plt.show()
+
 p = pyaudio.PyAudio()  # 初始化
 q = queue.Queue()  # 生成队列
-
 
 def audio_callback(in_data, frame_count, time_info, status):
     global ad_rdy_ev
@@ -137,9 +148,10 @@ stream.start_stream()  # Start the stream.
 window = signal.hamming(CHUNK)  # 返回hamming window，hamming window 为：w(n)=0.54−0.46cos(2πnM−1)0≤n≤M−1
 
 
-def read_audio_thead(q, stream, frames, ad_rdy_ev):
+def read_audio_thread(q, stream, frames, ad_rdy_ev):
     global rt_data
     global fft_data
+    global mfccs
 
     while stream.is_active():  # is_active():Returns whether the stream is active.
         ad_rdy_ev.wait(timeout=1000)
@@ -154,6 +166,7 @@ def read_audio_thead(q, stream, frames, ad_rdy_ev):
             rt_data = rt_data * window
             fft_temp_data = fftpack.fft(rt_data, rt_data.size, overwrite_x=True)  # 傅里叶变换
             fft_data = np.abs(fft_temp_data)[0:fft_temp_data.size // 2 + 1]  # 绝对值+向下取整
+            mfccs=librosa.feature.mfcc(rt_data,n_mfcc=13,sr=RATE)         
             if Recording:
                 frames.append(data)
         ad_rdy_ev.clear()
@@ -161,17 +174,14 @@ def read_audio_thead(q, stream, frames, ad_rdy_ev):
 
 ad_rdy_ev = threading.Event()  # 创建一对象
 
-t = threading.Thread(target=read_audio_thead, args=(q, stream, frames, ad_rdy_ev))  # 构造函数
+t = threading.Thread(target=read_audio_thread, args=(q, stream, frames, ad_rdy_ev))  # 构造函数
 
 t.daemon = True  # 是否为守护进程
 t.start()  # 进程开始
 
 # 显示图像界面
 plt.show()
-root = tk.Tk()
-app = Application(master=root)
-app.master.title("Test")
-app.mainloop()
+mfcc_show()
 
 # 结束进程
 stream.stop_stream()
